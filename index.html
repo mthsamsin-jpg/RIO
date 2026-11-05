@@ -99,7 +99,7 @@ nav.mainnav{display:flex; flex-direction:column; gap:2px;}
   border:1px solid transparent; transition:background .2s, color .2s, transform .2s;
 }
 .nav-item:hover{background:rgba(255,255,255,0.04); color:var(--paper); transform:translateX(2px);}
-.nav-item.active{background:rgba(212,175,55,0.10); color:var(--gold-soft); border-color:rgba(182, 150, 45, 0.24);}
+.nav-item.active{background:rgba(212,175,55,0.10); color:var(--gold-soft); border-color:rgba(212,175,55,0.24);}
 .nav-item svg{width:17px; height:17px; flex-shrink:0;}
 .sidebar-foot{margin-top:auto; padding:16px; border-radius:14px; background:var(--bg-panel); border:1px solid var(--line);}
 .sidebar-foot .label{font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em;}
@@ -784,7 +784,7 @@ tbody tr.new-row{animation:slidein .5s ease;}
 'use strict';
 
 /* ============================================================
-   RIO — SISTEMA FINANCEIRO (arquivo único)
+   RIO — SISTEMA FINANCEIRO (arquivo único com LocalStorage)
    ============================================================ */
 
 /* ---------- 1. Utilitários ---------- */
@@ -818,7 +818,7 @@ function animateNumber(el, target){
   });
 }
 
-/* ---------- 2. Dados (tudo zerado — começa limpo) ---------- */
+/* ---------- 2. Dados e Estado ---------- */
 const PALETTE = ['#c97b4a','#e2664b','#5b8c8a','#d4af37','#7fa98b','#9fb8b2','#4fae8b','#8a6fb0'];
 const CARD_BG = [
   'linear-gradient(135deg,#1a4640,#0e2b28)',
@@ -828,7 +828,6 @@ const CARD_BG = [
 ];
 
 let nextId = 100;
-const uid = () => nextId++;
 
 let categories = [
   {id:1, name:'Salário',        type:'in',  color:'#4fae8b', budget:0},
@@ -846,6 +845,31 @@ let transactions = [];
 let goals = [];
 let cards = [];
 let selectedCardId = null;
+
+/* ---------- SISTEMA DE SALVAMENTO LOCAL ---------- */
+function saveState() {
+  const state = { categories, transactions, goals, cards, selectedCardId, nextId };
+  localStorage.setItem('rio_finance_data', JSON.stringify(state));
+}
+
+function loadState() {
+  const saved = localStorage.getItem('rio_finance_data');
+  if (saved) {
+    try {
+      const parsed = JSON.parse(saved);
+      if (parsed.categories && parsed.categories.length > 0) categories = parsed.categories;
+      if (parsed.transactions) transactions = parsed.transactions;
+      if (parsed.goals) goals = parsed.goals;
+      if (parsed.cards) cards = parsed.cards;
+      if (parsed.selectedCardId !== undefined) selectedCardId = parsed.selectedCardId;
+      if (parsed.nextId) nextId = parsed.nextId;
+    } catch (e) {
+      console.error("Erro ao carregar dados salvos:", e);
+    }
+  }
+}
+
+const uid = () => { const id = nextId++; saveState(); return id; };
 
 const prevMonths = [0, 0, 0, 0, 0, 0];
 const monthLabels = (()=>{
@@ -966,7 +990,7 @@ const RIO_WORKER_URL = 'https://rio-proxy.mthsamsin.workers.dev';
 const RIO_MODEL = 'gemini-3.8-flash';
 const RIO_SYSTEM = `Você é o Rio IA, um assistente financeiro pessoal amigável e direto. Responda sempre em português do Brasil. Você ajuda o usuário a entender suas finanças, economizar, planejar metas e tomar decisões melhores com dinheiro. Seja conciso, prático e acolhedor. Use os dados do painel quando fizer sentido (saldo, entradas, saídas, categorias, metas, cartões), mas não invente números que você não tem. Se não souber algo, pergunte ou diga que não tem essa informação.`;
 
-let rioHistory = []; // [{ role: 'user'|'model', parts: [{ text }] }]
+let rioHistory = [];
 
 function rioAddMessage(role, text, extraClass){
   const msgs = $('#rioMsgs');
@@ -1004,7 +1028,7 @@ async function rioAsk(question){
   const sendBtn = $('#rioSend'); sendBtn.disabled = true;
 
   const maxRetries = 3;
-  const initialDelay = 2000; // 2 segundos
+  const initialDelay = 2000;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -1018,7 +1042,6 @@ async function rioAsk(question){
         })
       });
 
-      // Se a resposta for OK, processa e sai do loop
       if (res.ok) {
         const data = await res.json();
         const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '(sem resposta)';
@@ -1026,40 +1049,29 @@ async function rioAsk(question){
         rioRemoveTyping();
         rioAddMessage('model', text);
         rioHistory.push({ role: 'model', parts: [{ text }] });
-        break; // Sucesso, interrompe o loop de retry
+        break;
       }
 
-      // Se for um erro temporário (503 ou 429), tenta novamente
       if (res.status === 503 || res.status === 429) {
-        // Se ainda há tentativas sobrando, espera e continua
         if (attempt < maxRetries) {
-          const delay = initialDelay * Math.pow(2, attempt); // 2s, 4s, 8s...
-          const errBody = await res.text().catch(() => '');
-          console.warn(`Tentativa ${attempt + 1} falhou (${res.status}). Aguardando ${delay / 1000}s para tentar novamente...`, errBody);
-          
+          const delay = initialDelay * Math.pow(2, attempt);
           rioRemoveTyping();
           rioAddMessage('system', `O assistente está sobrecarregado. Tentando novamente em ${delay / 1000}s... (${attempt + 1}/${maxRetries})`);
           rioShowTyping();
-          
           await new Promise(resolve => setTimeout(resolve, delay));
-          continue; // Continua para a próxima tentativa
+          continue;
         }
       }
 
-      // Se for outro tipo de erro ou as tentativas se esgotaram, lança o erro
       const errBody = await res.text().catch(() => '');
       throw new Error(`Erro ${res.status}: ${errBody || res.statusText}`);
 
     } catch (err) {
-      // Se for a última tentativa, exibe o erro final
       if (attempt >= maxRetries) {
         rioRemoveTyping();
         rioAddMessage('system', 'Falha ao falar com a IA após várias tentativas: ' + err.message);
         rioHistory.pop();
       }
-      // Se não for a última tentativa, o loop continuará e tentará de novo (com o delay)
-      // Nota: O delay é aplicado apenas no bloco "if (res.status === 503...)".
-      // Para erros de rede (catch), poderíamos adicionar um delay também, mas para simplificar, vamos manter assim.
     }
   }
 
@@ -1245,7 +1257,7 @@ $('#txForm').addEventListener('submit', e => {
   const id = uid();
   transactions.push({id, desc, cat:$('#txCat').value, type:txType, val, date:$('#txDate').value || today()});
   lastAddedTx = id;
-  closeModal('txOverlay'); renderAll(); toast('Transação adicionada');
+  closeModal('txOverlay'); saveState(); renderAll(); toast('Transação adicionada');
 });
 
 $('#catForm').addEventListener('submit', e => {
@@ -1253,7 +1265,7 @@ $('#catForm').addEventListener('submit', e => {
   const name = $('#catName').value.trim(), budget = parseFloat($('#catBudgetInput').value);
   if(!name || !(budget >= 0)) return;
   categories.push({id:uid(), name, type:catType, color:catColorPick, budget: budget || 0});
-  closeModal('catOverlay'); renderAll(); toast('Categoria criada');
+  closeModal('catOverlay'); saveState(); renderAll(); toast('Categoria criada');
 });
 
 $('#goalForm').addEventListener('submit', e => {
@@ -1262,7 +1274,7 @@ $('#goalForm').addEventListener('submit', e => {
   const current = Math.min(target, parseFloat($('#goalCurrent').value) || 0);
   if(!name || !(target > 0)) return;
   goals.push({id:uid(), name, target, current, deadline:$('#goalDeadline').value});
-  closeModal('goalOverlay'); renderAll(); toast('Meta criada');
+  closeModal('goalOverlay'); saveState(); renderAll(); toast('Meta criada');
 });
 
 $('#contribForm').addEventListener('submit', e => {
@@ -1271,7 +1283,7 @@ $('#contribForm').addEventListener('submit', e => {
   const g = goals.find(x => x.id === contribId);
   if(!g || !(val > 0)) return;
   g.current = Math.min(g.target, g.current + val);
-  closeModal('contribOverlay'); renderAll(); toast('Valor adicionado à meta');
+  closeModal('contribOverlay'); saveState(); renderAll(); toast('Valor adicionado à meta');
 });
 
 $('#ccForm').addEventListener('submit', e => {
@@ -1282,21 +1294,21 @@ $('#ccForm').addEventListener('submit', e => {
   const id = uid();
   cards.push({id, name, digits, limit, used:0, bg:ccBgPick, due:'—', tx:[]});
   selectedCardId = id;
-  closeModal('ccOverlay'); renderAll(); toast('Cartão adicionado');
+  closeModal('ccOverlay'); saveState(); renderAll(); toast('Cartão adicionado');
 });
 
 /* ---------- Ações nas listas (delegação de eventos) ---------- */
 $('#txBody').addEventListener('click', e => {
   const b = e.target.closest('[data-del-tx]'); if(!b) return;
-  transactions = transactions.filter(t => t.id !== Number(b.dataset.delTx)); lastAddedTx = null; renderAll();
+  transactions = transactions.filter(t => t.id !== Number(b.dataset.delTx)); lastAddedTx = null; saveState(); renderAll();
 });
 $('#catGrid').addEventListener('click', e => {
   const b = e.target.closest('[data-del-cat]'); if(!b) return;
-  categories = categories.filter(c => c.id !== Number(b.dataset.delCat)); renderAll();
+  categories = categories.filter(c => c.id !== Number(b.dataset.delCat)); saveState(); renderAll();
 });
 $('#goalsGrid').addEventListener('click', e => {
   const del = e.target.closest('[data-del-goal]');
-  if(del){ goals = goals.filter(g => g.id !== Number(del.dataset.delGoal)); renderAll(); return; }
+  if(del){ goals = goals.filter(g => g.id !== Number(del.dataset.delGoal)); saveState(); renderAll(); return; }
   const add = e.target.closest('[data-add-goal]');
   if(add){
     contribId = Number(add.dataset.addGoal);
@@ -1306,9 +1318,9 @@ $('#goalsGrid').addEventListener('click', e => {
 });
 $('#ccRow').addEventListener('click', e => {
   const del = e.target.closest('[data-del-cc]');
-  if(del){ cards = cards.filter(c => c.id !== Number(del.dataset.delCc)); renderAll(); return; }
+  if(del){ cards = cards.filter(c => c.id !== Number(del.dataset.delCc)); saveState(); renderAll(); return; }
   const card = e.target.closest('[data-cc]');
-  if(card){ selectedCardId = Number(card.dataset.cc); renderCartoes(); }
+  if(card){ selectedCardId = Number(card.dataset.cc); saveState(); renderCartoes(); }
 });
 
 /* ---------- Filtros ---------- */
@@ -1368,6 +1380,7 @@ $('#exportBtn').addEventListener('click', () => {
 });
 
 /* ---------- Início ---------- */
+loadState(); // Carrega os dados salvos antes de renderizar
 setTxType('in');
 $('#txDate').value = today();
 renderAll();
